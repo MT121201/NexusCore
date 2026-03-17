@@ -1,13 +1,26 @@
 # src/agents/supervisor.py
+import os
+from dotenv import load_dotenv
+
 import logging
 from typing import Literal
 from temporalio import activity
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
 
-from src.models.state import AgentState, TaskRequest
+from src.models.state import AgentState, TaskRequest, AgentResponse
+from src.core.config import Settings
 
+load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+# Initialize the LLM with structured output mapping to our Pydantic Gate
+# We use temperature=0 because we want deterministic, logical routing, not creativity.
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+structured_llm = llm.with_structured_output(AgentResponse)
 
 
 # ==========================================
@@ -15,23 +28,41 @@ logger = logging.getLogger(__name__)
 # ==========================================
 
 async def supervisor_node(state: AgentState) -> dict:
-    """Analyzes the task and delegates to the appropriate specialist."""
+    """Analyzes the task and delegates to the appropriate specialist using an LLM."""
     logger.info(f"Supervisor analyzing task: {state.get('task_id')}")
 
-    # TODO: In the next phase, we will inject a real LLM here (e.g., ChatOpenAI/ChatAnthropic)
-    # to dynamically generate the plan and choose the next node.
-    # For now, we mock the routing logic to pass the structure check.
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", """You are the NexusCore Supervisor Agent. Your job is to analyze the user's request and delegate it to the correct specialist.
 
-    last_message = state["messages"][-1].content if state.get("messages") else ""
+        Available specialists (use exactly these names for 'tool_to_call'):
+        - 'db_agent': For anything related to databases, logs, queries, or user tables.
+        - 'infra_agent': For anything related to AWS, servers, infrastructure, or deployments.
 
-    # Mock routing logic based on prompt keywords
-    next_step = "db_agent" if "database" in last_message.lower() else "infra_agent"
+        Provide your step-by-step reasoning in the 'analysis' field.
+        You must provide a confidence score. If you are unsure, score it below 0.7.
+        """),
+        ("placeholder", "{messages}")
+    ])
 
-    return {
-        "current_agent": "supervisor",
-        "plan": [f"Route to {next_step}", "Validate results"],
-        "messages": [AIMessage(content=f"I have decided to route this to the {next_step}.")]
-    }
+    chain = prompt | structured_llm
+
+    try:
+        response: AgentResponse = await chain.ainvoke({"messages": state["messages"]})
+        logger.info(f"Supervisor Decision: {response.tool_to_call} (Confidence: {response.confidence_score})")
+
+        # Explicit mapping of the tool_to_call to our node names
+        decision = response.tool_to_call if response.tool_to_call in ["db_agent", "infra_agent"] else END
+
+        return {
+            "current_agent": "supervisor",
+            "next_node": decision,
+            "plan": [f"Delegated to {decision}"],
+            # Notice the message is now clean and only contains the AI's reasoning!
+            "messages": [AIMessage(content=f"Analysis: {response.analysis}")]
+        }
+    except Exception as e:
+        logger.error(f"Supervisor routing failed validation: {e}")
+        raise ValueError(f"Supervisor failed to generate valid routing: {e}")
 
 
 async def infra_agent_node(state: AgentState) -> dict:
@@ -64,19 +95,34 @@ async def critic_node(state: AgentState) -> dict:
     }
 
 
+async def fallback_node(state: AgentState) -> dict:
+    """Catches invalid routing decisions and handles them gracefully."""
+    invalid_route = state.get("next_node", "Unknown")
+    logger.warning(f"Fallback node triggered! Supervisor attempted to route to: {invalid_route}")
+
+    return {
+        "current_agent": "fallback",
+        "error_count": state.get("error_count", 0) + 1,
+        "completed_steps": state.get("completed_steps", []) + ["Fallback Protocol Activated"],
+        "messages": [AIMessage(
+            content=f"System Alert: I could not determine how to handle your request. (Attempted invalid route: {invalid_route}). Please try rephrasing.")]
+    }
 
 
 # ==========================================
 # 2. Routing Logic (Conditional Edges)
 # ==========================================
 
-def route_from_supervisor(state: AgentState) -> Literal["infra_agent", "db_agent"]:
-    """Determines where the supervisor should send the task."""
-    last_msg = state["messages"][-1].content
-    if "db_agent" in last_msg:
-        return "db_agent"
-    return "infra_agent"
+def route_from_supervisor(state: AgentState) -> Literal["infra_agent", "db_agent", "fallback"]:
+    """Determines where to send the task using the strictly typed next_node field."""
+    next_step = state.get("next_node")
 
+    if next_step in ["infra_agent", "db_agent"]:
+        return next_step
+
+    # If the LLM returned None, or made up a node name, send it to the fallback catcher
+    logger.warning(f"Invalid next_node '{next_step}'. Routing to fallback node.")
+    return "fallback"
 
 
 def route_from_critic(state: AgentState) -> Literal["supervisor", "__end__"]:
@@ -97,7 +143,7 @@ def route_from_critic(state: AgentState) -> Literal["supervisor", "__end__"]:
 # ==========================================
 
 def build_agent_graph():
-    """Constructs the LangGraph state machine based on flow.md."""
+    """Constructs the LangGraph state machine."""
     workflow = StateGraph(AgentState)
 
     # Add nodes
@@ -105,6 +151,7 @@ def build_agent_graph():
     workflow.add_node("infra_agent", infra_agent_node)
     workflow.add_node("db_agent", db_agent_node)
     workflow.add_node("critic", critic_node)
+    workflow.add_node("fallback", fallback_node)  # <--- Register the new fallback node
 
     # Add edges
     workflow.set_entry_point("supervisor")
@@ -115,6 +162,9 @@ def build_agent_graph():
     workflow.add_edge("db_agent", "critic")
 
     workflow.add_conditional_edges("critic", route_from_critic)
+
+    # The fallback node simply ends the workflow gracefully after reporting the error
+    workflow.add_edge("fallback", END)
 
     return workflow.compile()
 

@@ -7,6 +7,7 @@ from temporalio.worker import Worker
 # Import our workflow and activity
 from src.workflows.orchestrator import AgentOrchestratorWorkflow
 from src.agents.supervisor import execute_agent_graph
+from src.core.config import settings
 
 # Configure logging
 logging.basicConfig(
@@ -18,24 +19,22 @@ logger = logging.getLogger(__name__)
 
 async def main():
     """Starts the Temporal worker to consume background AI tasks."""
-    logger.info("Connecting to Temporal server...")
+    logger.info(f"Connecting to Temporal server at {settings.temporal_host}...")
 
     try:
-        # Connect to the local Temporal server (default port 7233)
-        client = await Client.connect("localhost:7233")
+        # Use settings instead of hardcoded values
+        client = await Client.connect(settings.temporal_host)
         logger.info("Successfully connected to Temporal server.")
 
-        # Initialize the worker with our workflow and activity
         worker = Worker(
             client,
-            task_queue="nexuscore-task-queue",
+            task_queue=settings.temporal_task_queue,  # <-- Here
             workflows=[AgentOrchestratorWorkflow],
             activities=[execute_agent_graph],
         )
 
-        logger.info("NexusCore Worker is actively listening on 'nexuscore-task-queue'...")
+        logger.info(f"NexusCore Worker is actively listening on '{settings.temporal_task_queue}'...")
 
-        # Start the worker (this will run indefinitely until killed)
         await worker.run()
 
     except Exception as e:

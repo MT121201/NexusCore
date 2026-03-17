@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from temporalio.client import Client
 
 from src.models.state import TaskRequest, TaskResponse
+from src.core.config import settings
 
 # Configure structured logging
 logging.basicConfig(
@@ -24,14 +25,13 @@ async def lifespan(app: FastAPI):
     global temporal_client
     logger.info("Initializing API Gateway...")
     try:
-        # Connect to the Temporal cluster
-        temporal_client = await Client.connect("localhost:7233")
-        logger.info("Successfully connected to Temporal cluster.")
+        # Use settings instead of hardcoded localhost
+        temporal_client = await Client.connect(settings.temporal_host)
+        logger.info(f"Successfully connected to Temporal cluster at {settings.temporal_host}.")
     except Exception as e:
         logger.error(f"Failed to connect to Temporal: {e}")
-        # In production, we might want to crash the pod here if Temporal is strictly required
 
-    yield  # App runs here
+    yield
 
     logger.info("Shutting down API Gateway...")
 
@@ -58,12 +58,12 @@ async def trigger_temporal_workflow(request: TaskRequest, client: Client):
     try:
         logger.info(f"Dispatching workflow for Task: {request.idempotency_key}")
 
-        # Actually start the workflow on the Temporal cluster
         await client.start_workflow(
             "AgentOrchestratorWorkflow",
             request,
             id=str(request.idempotency_key),
-            task_queue="nexuscore-task-queue",
+            # Use settings for the task queue
+            task_queue=settings.temporal_task_queue,
         )
         logger.info(f"Workflow {request.idempotency_key} successfully dispatched.")
     except Exception as e:
