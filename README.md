@@ -129,9 +129,3 @@ curl -X POST "http://localhost:8000/v1/execute" \
 - [ ] **Phase 3:** MCP Sidecar Setup (Postgres & AWS Tooling)
 - [ ] **Phase 4:** Redis Pub/Sub & WebSocket real-time UI integration
 ```
-
-***
-
-This `README.md` instantly communicates that you and your team know exactly what you are doing. It highlights the architecture, clearly explains the value proposition, and makes it incredibly easy for anyone (like an interviewer) to clone and run it.
-
-Would you like me to push forward into **Phase 2** now and start replacing our mock LangGraph supervisor with an actual LangChain LLM integration?
