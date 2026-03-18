@@ -1,44 +1,69 @@
-# NexusCore: Architecture & Onboarding Guide
+# 🌌 NexusCore: Architecture & Onboarding Guide
 
-Welcome to the NexusCore project! This document will get you up to speed on our Distributed Multi-Agent System (MAS) in about 5 minutes.
+Welcome to the NexusCore project. This document serves as the technical source of truth for our Distributed Multi-Agent System (MAS).
 
-## 1. System Philosophy
-NexusCore is not a standard synchronous API. Because LLM agents can take minutes to reason, plan, and execute, we use a **Fire-and-Forget + Asynchronous Worker** architecture. 
-* **FastAPI** handles the immediate web traffic.
-* **Temporal** acts as our invincible orchestrator, ensuring tasks never drop.
-* **LangGraph** acts as the "Brain", routing tasks between specialized AI agents.
-
-## 2. The End-to-End Request Flow
-When a user asks the AI to do something, here is the exact journey of that request:
-
-1. **Ingress:** User sends a POST request to `/v1/execute` on the **FastAPI Gateway**.
-2. **Acceptance:** The Gateway validates the payload via Pydantic, generates a unique `idempotency_key` (Task ID), and returns a `202 Accepted` to the user instantly.
-3. **Handoff:** In the background, FastAPI sends a signal to the **Temporal Server** to start the `AgentOrchestratorWorkflow`.
-4. **Orchestration:** A **Temporal Worker** (running on a separate pod/process) picks up the workflow. The workflow guarantees execution (if the pod crashes, Temporal moves the task to a new pod).
-5. **The Brain (LangGraph):** The workflow triggers the `execute_agent_graph` Activity. This boots up our LangGraph state machine:
-   * **Supervisor Agent:** Reads the prompt and decides which specialist to route to.
-   * **Specialist Agents (DB/Infra):** Execute the specific tasks using MCP tools.
-   * **Critic Agent:** Reviews the output for hallucinations. Loops back if it fails.
-6. **Completion:** The graph finishes, returning the final data to the Temporal Workflow, which marks the overarching task as "Complete". *(Note: Future phases will broadcast this completion to a WebSocket UI via Redis).*
+## 1. System Philosophy: "The Durable Brain"
+NexusCore is built to solve the "Fragile LLM" problem. Standard AI apps fail when requests time out or the LLM hallucinates a bad format. NexusCore treats AI agents as **durable microservices**:
+* **Asynchronous Ingress:** FastAPI accepts the work; Temporal ensures it finishes.
+* **Structured Reasoning:** We use **Pydantic Gates** to force the LLM into strict data contracts before any routing occurs.
+* **Decoupled Tools (MCP):** Agents do not own the tools (DB/Infra). Tools live in separate **MCP Servers** (Sidecars) that agents call via a standardized protocol.
 
 ---
 
-## 3. Current Codebase Map (Phase 1 Complete)
+## 2. Technical Flow: The Deep Dive
+When a prompt enters the system, it follows this hardened execution path:
 
-We use `uv` for dependency management. Here is what we have built so far and where to find it:
+1.  **Ingress & Validation:** FastAPI receives the request. Pydantic validates the schema. A `TaskID` is returned immediately.
+2.  **Temporal Dispatch:** The `AgentOrchestratorWorkflow` is triggered. This manages the lifecycle, retries, and state persistence of the AI's reasoning.
+3.  **The Supervisor (The Brain):** * Uses `gpt-4o-mini` with a **Structured Output** wrapper.
+    * **The Pydantic Gate:** If the LLM returns a confidence score below 0.7 or an invalid JSON, the system raises a `ValueError`. Temporal catches this and retries the node.
+    * **State-Based Routing:** We do **not** parse strings (e.g., "I will call the DB agent"). The LLM populates a `next_node` variable in the `AgentState`. The router simply looks at this variable.
+4.  **The Specialist (The Hands):** * The **DB Agent** initializes a `MultiServerMCPClient`.
+    * It executes the **Postgres MCP Server** as a subprocess.
+    * The agent dynamically discovers tools (`list_tables`, `run_query`) via the MCP Protocol.
+5.  **Defensive Fallback:** If the LLM makes an impossible routing decision, the **Fallback Node** catches the execution, logs the error, and ends the workflow gracefully instead of looping infinitely.
 
-### Infrastructure
-* `docker-compose.yml`: Spins up PostgreSQL (with pgvector) and Redis Stack for local development.
+---
 
-### Application Code (`/src`)
-* **`models/state.py`**: The central source of truth for our data shapes. Contains Pydantic models for API requests (`TaskRequest`) and the TypedDict for the LangGraph memory (`AgentState`).
-* **`api/main.py`**: The FastAPI application. Contains the lifespan manager that connects to Temporal on startup, and the `/v1/execute` endpoint.
-* **`workflows/orchestrator.py`**: Contains the Temporal Workflow (`AgentOrchestratorWorkflow`). This is the resilient manager that tells the AI to start and sets timeouts/retry policies.
-* **`agents/supervisor.py`**: The LangGraph state machine. It contains the individual node functions (Supervisor, DB Agent, Critic) and the routing logic. It also wraps the graph execution in a Temporal Activity (`execute_agent_graph`).
-* **`core/worker.py`**: The daemon script. Running this file boots up a Temporal Worker that listens to the `nexuscore-task-queue` and actually executes the workflows/activities.
+## 3. Codebase Map (Phase 2: "Structured Brain" Complete)
 
-### How to Run Locally
-1. Start infrastructure: `docker compose up -d`
-2. Start Temporal Dev Server: `temporal server start-dev`
-3. Start the AI Worker: `uv run python -m src.core.worker`
-4. Start the API Gateway: `uv run uvicorn src.api.main:app --reload --port 8000`
+### ⚙️ Core & Configuration
+* **`.env`**: (Excluded from Git) Stores sensitive keys like `OPENAI_API_KEY`.
+* **`src/core/config.py`**: Uses `pydantic-settings` to provide type-safe configuration throughout the app. **No hardcoded strings allowed.**
+* **`src/models/state.py`**: Defines our data contracts.
+    * `AgentResponse`: The Pydantic model enforcing the 0.7 confidence score gate.
+    * `AgentState`: The LangGraph state, now including `next_node` for reliable routing.
+
+### 🧠 The Agents (`src/agents/`)
+* **`supervisor.py`**: The heart of the system. Contains the LangGraph definition, the `supervisor_node` (AI Routing), and the `fallback_node` (Safety Net).
+* **`mcp_client`**: Integrated directly into specialist nodes to provide dynamic tool-calling.
+
+### 🛠️ The Tools (`src/mcp/`)
+* **`postgres_server.py`**: A standalone **FastMCP** server. It exposes safe, read-only database tools to the AI. It can be tested independently of the agents using the `mcp dev` command.
+
+### 🏗️ Orchestration (`src/core/`)
+* **`worker.py`**: The Temporal Worker. This is the process that actually executes the LLM logic and MCP tools. It is designed to be horizontally scaled.
+
+---
+
+## 4. Operational Commands
+
+### Development Testing
+To test the "Hands" (Database Tools) without running the whole AI:
+```bash
+uv run mcp dev src/mcp/postgres_server.py
+```
+
+### Running the Full Stack
+1.  **Infrastructure:** `docker compose up -d`
+2.  **Temporal:** `temporal server start-dev`
+3.  **Worker (The AI):** `uv run python -m src.core.worker`
+4.  **API (The Gateway):** `uv run uvicorn src.api.main:app --reload`
+
+---
+
+## 5. Senior Design Patterns implemented
+* **Idempotency:** Every task is tracked by a UUID to prevent duplicate executions.
+* **Subprocess Isolation:** MCP servers run in their own process space, preventing a database driver crash from taking down the main AI Worker.
+* **Retry-on-Hallucination:** By raising standard Python errors when Pydantic validation fails, we leverage Temporal's retry policies to "self-heal" bad AI responses.
+new engineer. Would you like to start **Phase 3**? I can help you build the **AWS MCP Server** to give our `infra_agent` real deployment capabilities, or we can move to **Phase 4** and set up the **Redis/WebSocket** bridge for the UI.

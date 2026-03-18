@@ -1,7 +1,7 @@
 #src/models/state.py
 from typing import List, Optional, Annotated, TypedDict, Any
 from uuid import UUID, uuid4
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from langchain_core.messages import BaseMessage
 import operator
 
@@ -34,6 +34,7 @@ class AgentResponse(BaseModel):
     Standardized output required from every Agent node.
     Enforces the DEVDOC.md confidence score constraint.
     """
+    model_config = ConfigDict(extra="forbid")
     analysis: str = Field(..., description="The step-by-step reasoning for the decision.")
     tool_to_call: Optional[str] = Field(None, description="The exact name of the MCP tool to execute, if any.")
     tool_arguments: Optional[dict[str, Any]] = Field(None, description="JSON arguments for the requested tool.")

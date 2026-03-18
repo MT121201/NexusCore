@@ -8,6 +8,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.135.1",
     "langchain-core>=1.2.19",
+    "langchain-mcp-adapters>=0.2.2",
     "langchain-openai>=1.1.11",
     "langgraph>=1.1.2",
     "mcp[cli]>=1.26.0",

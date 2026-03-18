@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from temporalio.client import Client
+from temporalio.contrib.pydantic import pydantic_data_converter
 
 from src.models.state import TaskRequest, TaskResponse
 from src.core.config import settings
@@ -26,7 +27,8 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing API Gateway...")
     try:
         # Use settings instead of hardcoded localhost
-        temporal_client = await Client.connect(settings.temporal_host)
+        temporal_client = await Client.connect(settings.temporal_host,
+                                               data_converter=pydantic_data_converter)
         logger.info(f"Successfully connected to Temporal cluster at {settings.temporal_host}.")
     except Exception as e:
         logger.error(f"Failed to connect to Temporal: {e}")
