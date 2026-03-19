@@ -5,15 +5,15 @@ services:
     image: ankane/pgvector:v0.5.1 # PostgreSQL 15/16 with pgvector pre-installed
     container_name: nexuscore_db
     environment:
-      POSTGRES_USER: nexus_user
-      POSTGRES_PASSWORD: nexus_password
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: nexuscore
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U nexus_user -d nexuscore"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nexuscore"]
       interval: 5s
       timeout: 5s
       retries: 5
