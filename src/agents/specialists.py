@@ -1,6 +1,5 @@
 # src/agents/specialists.py
 import logging
-from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from src.models.state import AgentState

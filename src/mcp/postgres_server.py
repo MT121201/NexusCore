@@ -2,7 +2,6 @@
 
 import asyncpg
 import logging
-from typing import Any, List, Dict
 from mcp.server.fastmcp import FastMCP
 from src.core.config import settings
 

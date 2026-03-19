@@ -6,7 +6,7 @@ from temporalio.common import RetryPolicy
 # Temporal requires us to explicitly allow imports that might have non-deterministic
 # side effects (like datetime or random) when importing inside a workflow file.
 with workflow.unsafe.imports_passed_through():
-    from src.models.state import TaskRequest, AgentResponse
+    from src.models.state import TaskRequest
     import logging
 
 logger = logging.getLogger(__name__)
