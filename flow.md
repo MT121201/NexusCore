@@ -29,10 +29,10 @@ graph TD
         PA --> SV2[Supervisor\nre-evaluates]
         PB --> SV2
         SV2 -->|route to critic| CR[Critic Node\ngpt-4o-mini]
-        CR -->|final_result| PUB[Redis Pub/Sub\ntask_updates:{task_id}]
+        CR -->|final_result| PUB[Redis Pub/Sub\ntask_updates:task_id]
     end
 
-    PUB -->|event-driven push\npubsub.listen| WS[WebSocket\n/ws/task/{task_id}]
+    PUB -->|event-driven push\npubsub.listen| WS[WebSocket\n/ws/task/task_id]
     WS --> UI[[Browser UI]]
 
     style TW fill:#f96,stroke:#333,stroke-width:2px
