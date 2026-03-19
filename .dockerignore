@@ -1,0 +1,33 @@
+# Python artifacts
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Version control
+.git/
+.gitignore
+
+# Local environment — never bake secrets into the image
+.env
+
+# Test suite — not needed in production image
+tests/
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+
+# Docs — not needed in the image
+*.md
+devdoc.md
+flow.md
+
+# OS
+.DS_Store
+Thumbs.db

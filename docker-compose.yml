@@ -1,8 +1,26 @@
-version: '3.8'
+# =============================================================
+# NexusCore — Full Stack
+#
+# Start order (enforced by depends_on + healthchecks):
+#   postgres → temporal → redis
+#                       ↘ nexuscore-api
+#                       ↘ nexuscore-worker
+#
+# Usage:
+#   docker compose up --build          # full stack
+#   docker compose up --build -d       # detached
+#   docker compose logs -f nexuscore-worker
+# =============================================================
 
 services:
+
+  # -----------------------------------------------------------
+  # PostgreSQL — app database (pgvector) + Temporal persistence
+  # Temporal auto-setup creates its own 'temporal' and
+  # 'temporal_visibility' databases on this same instance.
+  # -----------------------------------------------------------
   postgres:
-    image: ankane/pgvector:v0.5.1 # PostgreSQL 15/16 with pgvector pre-installed
+    image: ankane/pgvector:v0.5.1
     container_name: nexuscore_db
     environment:
       POSTGRES_USER: postgres
@@ -16,15 +34,142 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres -d nexuscore"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
 
+  # -----------------------------------------------------------
+  # Redis — async pub/sub for real-time WebSocket streaming
+  # -----------------------------------------------------------
   redis:
-    image: redis/redis-stack-server:latest # Includes Pub/Sub and fast queueing
+    image: redis/redis-stack-server:latest
     container_name: nexuscore_redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # -----------------------------------------------------------
+  # Temporal — durable workflow orchestrator
+  # auto-setup creates its own schema on our postgres instance.
+  # -----------------------------------------------------------
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: nexuscore_temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=postgres
+      # Ensure Temporal doesn't collide with our app DB name
+      - DBNAME=temporal
+      - VISIBILITY_DBNAME=temporal_visibility
+    ports:
+      - "7233:7233"
+    healthcheck:
+      # TCP-level check — works without any extra tooling in the image
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/7233' 2>/dev/null && echo ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  # -----------------------------------------------------------
+  # NexusCore API Gateway — FastAPI, returns 202 immediately
+  # -----------------------------------------------------------
+  nexuscore-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: nexuscore_api
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=production
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_TASK_QUEUE=nexuscore-task-queue
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/nexuscore
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_MAX_RETRIES=${OPENAI_MAX_RETRIES:-3}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # -----------------------------------------------------------
+  # NexusCore Worker — Temporal activity runner + MCP pool
+  # Spawns MCP subprocesses internally; needs DATABASE_URL for
+  # the postgres_mcp sidecar and AWS credentials for aws_mcp.
+  # -----------------------------------------------------------
+  nexuscore-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: nexuscore_worker
+    command: ["python", "-m", "src.core.worker"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - ENVIRONMENT=production
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_TASK_QUEUE=nexuscore-task-queue
+      - TEMPORAL_MAX_CONCURRENT_ACTIVITIES=${TEMPORAL_MAX_CONCURRENT_ACTIVITIES:-10}
+      - TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS=${TEMPORAL_MAX_CONCURRENT_WORKFLOW_TASKS:-20}
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/nexuscore
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o-mini}
+      - OPENAI_MAX_RETRIES=${OPENAI_MAX_RETRIES:-3}
+      - MCP_POOL_SIZE=${MCP_POOL_SIZE:-4}
+      - SUPERVISOR_CONFIDENCE_THRESHOLD=${SUPERVISOR_CONFIDENCE_THRESHOLD:-0.7}
+      # AWS credentials for the infra_agent MCP sidecar (optional)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-us-east-1}
+    restart: on-failure
+
+  # -----------------------------------------------------------
+  # Temporal Web UI (optional — uncomment to enable)
+  # Browse workflows at http://localhost:8080
+  # -----------------------------------------------------------
+  # temporal-ui:
+  #   image: temporalio/ui:latest
+  #   container_name: nexuscore_temporal_ui
+  #   depends_on:
+  #     temporal:
+  #       condition: service_healthy
+  #   environment:
+  #     - TEMPORAL_ADDRESS=temporal:7233
+  #   ports:
+  #     - "8080:8080"
 
 volumes:
   postgres_data:
