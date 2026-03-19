@@ -13,14 +13,23 @@ class Settings(BaseSettings):
     # Temporal
     temporal_host: str = "localhost:7233"
     temporal_task_queue: str = "nexuscore-task-queue"
+    temporal_max_concurrent_activities: int = 10
+    temporal_max_concurrent_workflow_tasks: int = 20
 
-    # LLM Integrations
+    # LLM
     openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_max_retries: int = 3
 
-    # This tells Pydantic to look for a .env file in the root directory
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # MCP subprocess pool — each slot is an independent set of subprocesses
+    mcp_pool_size: int = 4
+
+    # Supervisor routing gate
+    supervisor_confidence_threshold: float = 0.7
 
     database_url: str = "postgresql://postgres:postgres@localhost:5432/nexuscore"
+
+    redis_url: str = "redis://localhost:6379/0"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
